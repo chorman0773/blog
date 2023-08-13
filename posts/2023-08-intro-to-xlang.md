@@ -68,6 +68,22 @@ The IR is represented as a number of structs, which can be constructed and modif
 
 Each plugin is passed a mutable reference to the top level `File` by the `accept_ir` method of the `XLangPlugin` trait. Frontends would then build the IR and write it to the reference, backends would read the IR and build it's output, and transformers modify the `File` in place. 
 
+## Stack Operations in XIR, or how to do interesting things
+
+
+Many operations in XIR are typed, and perform some transformation on the values taken from the stack before pushing new ones. However, three expressions manipulate the stack in more generalized ways. The expressions are `pivot`, `pop`, and `dup`, and are collectively called the stack operations.
+
+`pop` and `dup` are both relatively straightforward for anyone who's worked with a stack, but has a few interesting features. Both are provided with a single integer value we'll call `n`. Both instructions, `pop n` and `dup n`, pop `n` values from the stack. With `pop n` these values are discarded, and `dup n` pushs the values in the reverse order they were popped, then repeats the process. As a net result, `dup n` duplicates a group of `n` values from the stack. In the XIR parser, these expressions may be written simply as `pop` or `dup`, in which case an `n` of `1` is inferred.
+
+`pivot` is an interesting expression. It is provided with 2 values, which we'll call `m` and `n`. Strictly speaking, `pivot m n` pops `n` values from the stack in a group we'll call `S`, and then pops `m` values from the stack in a group we'll call `T`. It then pushes the values in `S` in the opposite order that they were popped (or, the same order they appeared on the stack in the first case), and then pushes the values in `T`.
+This is a powerful operation in XIR, as it can provide effectively random access to the value stack in a proper stack operation.
+
+There notable cases are particularily useful for lowering source languages, though others may be useful in niche cases, and show up in optimized IR that makes heavier use of the stack compared to local variables (which are stored primarily in memory).
+* `pivot 1 n`, moves 1 value to the top of the stack from `n` values down.
+* `pivot n 1` moves 1 value from the top of the stack to `n` values down (not including that value itself),
+* `pivot n n` swaps two equally sized groups of `n` values.
+
+Like `pop` and `dup`, `pivot` may appear in two special-cased forms. A single input like `pivot n` means `pivot n n` (performs the swap operation), and no inputs like simply `pivot` means `pivot 1 1` (swaps 1 value). 
 
 
 ## An Example, the Tiny language lowered to XLang
@@ -135,16 +151,6 @@ END
 
 
 In a basic xlang lowering, we can translate the above to:
-```
-public function _ZN5test12f0Ed(float(64)) -> int(32){
-    convert weak int(32)
-    exit 1
-}
-```
-
-A very simple program with a very simple translation - convert the input value to a 32-bit integer, then return it.
-
-To show the behaviour of the program, in loose terms, to validate that the lowering is correct, we can add stack type annotations in comments, placed in square brackets, that show the state of the current value stack that xlang sees after each expression. (The annotations are not processed by the compiler, and are simply added for ease of reading)
 
 ```
 public functon _ZN5test12f0Ed(float(64)) -> int(32){
@@ -154,10 +160,16 @@ public functon _ZN5test12f0Ed(float(64)) -> int(32){
 }
 ```
 
+A very simple program with a very simple translation - convert the input value to a 32-bit integer, then return it.
+
 Function parameters are placed on the stack in their appropriate order and are already there when the function begins execution.
 `convert weak int(32)` then pops a value off the stack, in this case `float(64)`, performs a conversion, and pushes the result, in this case `int(32)`.
 
 `exit 1` then pops 1 value off the stack and "exits" (that is, returns from) the current function with that popped value, which is the return value.
+
+To show the behaviour of the program, in loose terms, to validate that the lowering is correct, stack type annotations were added to show the state of the stack after each statement. These aren't interpreted by the XIR frontend (as they appear in comments), but are provided as a visual guide to show the world as understood by xlang.
+
+
 
 ### test2 - A simple executable program
 
@@ -172,45 +184,6 @@ END
 
 This needs some more work, and we need some dependencies for the `READ` and `WRITE` statements, as well as for creating strings (an extension allows us to ). We're also going to lower the `MAIN` function in two steps: one step compiling the function directly, and a second generating a call stub that does some initialization, calls the main function, and then returns.
 The definitions of the `__tiny_read_INT`, `__tiny_write_INT`, `__tiny_const_string`, `__tiny_rt_init`, and `__tiny_rt_cleanup` are left as an implementation-detail and are largely irrelevant for this program:
-
-```
-public function __tiny_read_INT(*void()) -> int(32);
-public function __tiny_write_INT(int(32), *void());
-
-public function __tiny_const_string(*const readonly nonnull char(8)) -> *void();
-public function __tiny_rt_init();
-public function __tiny_rt_cleanup();
-
-public function _ZN5test24mainEv() -> int(32){
-    const global_address function(*void())->int(32) __tiny_read_INT
-    const global_address function(*const readonly nonnull char(8)) -> *void() __tiny_const_string
-    const *char(8) "test-stdin\n"
-    derive *const readonly nonnull char(8) nop
-    call function(*const readonly nonnull char(8))->*void()
-    call function(*void())->int(32)
-    const global_address function(int(32),*void()) __tiny_write_INT
-    pivot 1 1
-    const global_address function(*const readonly nonnull char(8)) -> *void() __tiny_const_string
-    const *char(8) "test-stdin\n"
-    derive *const readonly nonnull char(8) nop
-    call function(*const readonly nonnull char(8))->*void()
-    call function(int(32),*void())
-    const int(32) 0
-    exit 1
-}
-
-public function main() -> int(32){
-    const global_address function() __tiny_rt_init
-    call function()
-    const global_address function()->int(32) _ZN5test24mainEv
-    call function()->int(32)
-    const global_address function() __tiny_rt_cleanup
-    call function()
-    exit 1
-}
-```
-
-Adding stack type annotations, we generating
 
 ```
 public function __tiny_read_INT(*void()) -> int(32);
@@ -249,4 +222,84 @@ public function main() -> int(32){
     exit 1
 }
 ```
+External functions can be declared by giving the signature without a body, ending the line with `;`.
 
+We use the `const global_address` expresion to push the address of a global, in this case a function. 
+`const` in general pushes a sole constant value to the stack (such as an scalar value, uninitialized value, or, as in this case, the address of some function to cal). 
+`const *char(8) <string-literal>` is another example of this, which pushes a string literal with the given type (in this case, a pointer, so the string goes into rodata somewhere else in memory rather than appear directly on the stack). 
+
+The `derive` expression following the string literal push is an type manipulation instruction for pointers. It changes attributes on a pointer type used by the optimizer. In many cases it also forms a new edge in the provenance[^1]. The Pointer model of xlang is not discussed in this post.
+
+The `call` expression, intuitively, calls a function. It pops off the parameter list specified by the signature it is given, then pops the function to call (usually a function pointer). It then performs a call by pushing the arguments in the callee frame, and beginning execution with the first statement in the function. After that function returns (via `exit`), if the function doesn't return `void()`, the `call` expression pushes the return value from the function back in the callers frame. 
+
+We've examined the [`pivot` expression](#stack-operations-in-xir-or-how-to-do-interesting-things) in detail in a previous section, so it won't be explained again here.
+
+### test3 - Adding some Control (Flow)
+
+Our third, and final example, is another program that this time includes the use of control flow, through `IF`. 
+
+```
+INT MAIN main() BEGIN
+   INT x;
+   INT y;
+   READ(x,"test-stdin");
+   IF (x==1)
+       y := 0;
+   ELSE
+       y := x;
+   WRITE(y,"test-stdout");
+END
+```
+
+Here, we read a value from `test-stdin` into `x`, then compare `x` and `1`. If they are equal, then set `y` to `0` otherwise set `y` to `x`. 
+We then write the value of `y` to `test-stdout`.
+
+For this example, the entry point `main` is omitted, and is exactly the same as the one from `test2`. We'll only show the actual written code translated
+
+```
+public function __tiny_read_INT(*void()) -> int(32);
+public function __tiny_write_INT(int(32), *void());
+
+public function __tiny_const_string(*const readonly nonnull char(8)) -> *void();
+
+public function _ZN5test34mainEv() -> int(32){
+    // []
+    const global_address function(*void())->int(32) __tiny_read_INT // [*function(*void())->int(32)]
+    const global_address function(*const readonly nonnull char(8)) -> *void() __tiny_const_string // [*function(*void())->int(32), *function(*const readonly nonnull char(8))->void()]
+    const *char(8) "test-stdin\n" // [*function(*void())->int(32), *function(*const readonly nonnull char(8))->void(), *char(8)]
+    derive *const readonly nonnull char(8) // [*function(*void())->int(32), *unction(*const readonly nonnull char(8))->void(), *const readonly nonnull char(8)]
+    call function(*const readonly nonnull char(8))->*void() // [*function(*void())->int(32), *void()]
+    call function(*void())->int(32) // [int(32)]
+    dup // [int(32),int(32)]
+    const int(32) 1 // [int(32),int(32),int(32)]
+    cmp_eq // [int(32),uint(1)]
+    branch not_equal @0 // [int(32)]
+    pop // []
+    const int(32) 0 // [int(32)]
+    target @0 [int(32)] // [int(32)]
+    const global_address function(int(32),*void()) __tiny_write_INT // [int(32), *function(int(32),*void())]
+    pivot 1 1 // [*function(int(32),*void()), int(32)]
+    const global_address function(*const readonly nonnull char(8)) -> *void() __tiny_const_string // [*function(int(32),*void()), int(32), *function(*const readonly nonnull char(8)) -> *void()]
+    const *char(8) "test-stdin\n" // [*function(int(32),*void()), int(32), *function(*const readonly nonnull char(8)) -> *void(), *char(8)]
+    derive *const readonly nonnull char(8) // [*function(int(32),*void()), int(32), *function(*const readonly nonnull char(8)) -> *void(), *const readonly nonnull char(8)]
+    call function(*const readonly nonnull char(8))->*void() // [*function(int(32),*void()), int(32), *void()]
+    call function(int(32),*void()) // []
+    const int(32) 0 // [int(32)]
+    exit 1
+}
+
+```
+
+`branch` and `target` are the two main new statements here, along with `cmp_eq`.
+
+`cmp_eq` is the simplest. It compares two values and pushes `0` if they are unequal, and `1` if they are equal. The pushed value is of type `uint(1)` (a 1 bit unsigned integer type), though this rarely matters.
+
+`branch` "branches" to a target (which can be considered like a label in assembly or C), when some condition is satisfied. You can specify either a condition code, such as `not_equal` used here, `always`, or `never`, to indicate when to `branch`. When a condition is specified, it will pop a value from the stack which has an integer type. The relation of that value to `0` is then checked according to the condition code. In the case of `not_equal`, the branch is taken when the value used is not equal to `0`. `branch always` and `branch never` do not pop a value, and will either always (or never) take the branch. 
+In all cases, `branch` may perserve a certain set of values from the top of the stack into the target when it takes the branch.
+
+The `target` statement can be used to declare a target of a branch. As part of the statement, an "incoming" stack is specified, which is preserved from branches to the target that are taken. It is also preserved when "falling through" into a target from a previous expression, in this case, the values are also taken from the top of the stack and the bottom values are discarded. 
+Certain expressions, such as `exit` or `branch always` are treated as "diverging" (IE. they do not resume execution, so they do not have an output stack). These will typically be followed by a target so execution can be reached from another part of the program.
+
+The remainder of the function is similar to the second example, so it is not explained here.
+
+[^1]: https://www.ralfj.de/blog/2018/07/24/pointers-and-bytes.html
