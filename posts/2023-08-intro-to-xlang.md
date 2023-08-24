@@ -302,4 +302,8 @@ Certain expressions, such as `exit` or `branch always` are treated as "diverging
 
 The remainder of the function is similar to the second example, so it is not explained here.
 
+## Comments
+
+Comments about this post may be left [on the issue tracker](https://github.com/chorman0773/blog/issues/2).
+
 [^1]: https://www.ralfj.de/blog/2018/07/24/pointers-and-bytes.html
