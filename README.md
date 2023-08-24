@@ -2,7 +2,7 @@
 
 ## Posts
 
-- [2023-08](posts/2023-08-intro-to-xlang)
+- [2023-08](posts/2023-08-intro-to-xlang): Intro to XLang.
 
 
 ## License
