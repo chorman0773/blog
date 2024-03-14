@@ -1,0 +1,13 @@
+[book]
+authors = ["Connor Horman"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Connor Horman's Blog"
+
+[output.html]
+
+[output.markdown]
+
+[preprocessor.add-copyright]
+exclude = ["COPYRIGHT.md"]
