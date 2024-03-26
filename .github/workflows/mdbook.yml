@@ -37,7 +37,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
           rustup update
           cargo install --vers "^${MDBOOK_VERSION}" --no-default-features --features search mdbook
-          cargo install --git https://github.com/chorman0773/mdbook-fiction-tools --bins mdbook-add-copyright
+          cargo install --git https://github.com/chorman0773/mdbook-fiction-tools 
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v4
